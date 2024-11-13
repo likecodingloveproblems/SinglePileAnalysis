@@ -1,4 +1,4 @@
-from dataclasses import field
+from pydantic import BaseModel, Field
 
 counter = 0
 
@@ -9,5 +9,5 @@ def get_tag():
     return counter
 
 
-class TaggedObject:
-    tag: int = field(default_factory=get_tag)
+class TaggedObject(BaseModel):
+    tag: int = Field(default_factory=get_tag)

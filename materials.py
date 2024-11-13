@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from functools import cache
+from typing import Any
 
 import numpy as np
 from openseespy import opensees as ops
+from pydantic import BaseModel
 
 from enums import OpsMaterials
 from tag_generator import TaggedObject
@@ -17,8 +19,7 @@ from tag_generator import TaggedObject
 # Tau_f(z) -> Ultimate friction stress with respect to depth
 
 
-@dataclass
-class SoilLayer:
+class SoilLayer(BaseModel):
     up_depth: float
     bottom_depth: float
     up_shear_modulus: float
@@ -30,7 +31,7 @@ class SoilLayer:
 
     @property
     def length(self):
-        return self.up_depth - self.bottom_depth
+        return self.bottom_depth - self.up_depth
 
     @property
     def avg_poisson_ratio(self):
@@ -60,10 +61,8 @@ class SoilLayer:
         ) * (depth - self.up_depth)
 
 
-@dataclass
-class SoilProfile:
+class SoilProfile(BaseModel):
     layers: list[SoilLayer]
-    soil_layers_count: int
 
     @property
     def max_shear_modulus(self):
@@ -112,7 +111,6 @@ class SoilProfile:
         return self.poisson_ratio(self.pile_length)
 
 
-@dataclass
 class PileFrictionMaterial(TaggedObject):
     soil_profile: SoilProfile
     pile_radius: float
@@ -170,28 +168,33 @@ class PileFrictionMaterial(TaggedObject):
         return 1 / self.Ke_friction()
 
     @staticmethod
+    @cache
     def __get_sample_displacements():
-        return np.geomspace(1e-12, 0.1, 50)
+        return np.array([0] + np.geomspace(1e-12, 0.1, 50).tolist())
 
     def __get_forces(self, strains):
         return strains / (self.a() + self.b() * strains)
 
-    def __post_init__(self):
-        strains = self.__get_sample_displacements()
-        stresses = self.__get_forces(strains)
+    def model_post_init(self, __context: Any) -> None:
+        displacements = self.__get_sample_displacements()
+        forces = self.__get_forces(displacements)
         ops.uniaxialMaterial(
-            self.tag, self.ops_material_type, "-strain", *strains, "-stress", *stresses
+            self.ops_material_type,
+            self.tag,
+            "-strain",
+            *displacements,
+            "-stress",
+            *forces,
         )
 
 
-@dataclass
 class PileTipMaterial(TaggedObject):
     soil_profile: SoilProfile
     pile_radius: float
     Rfb: float  # Corrective factor to apply, construction effects, soil type and ...
     Sbu: float  # final settlement to transfer to plastic phase
     alpha21: float  # ratio of second stiffness to initial stiffness
-    ops_material_type = OpsMaterials.ElasticMultiLinear.value
+    ops_material_type: OpsMaterials = OpsMaterials.ElasticMultiLinear.value
 
     @property
     def depth(self):
@@ -221,27 +224,31 @@ class PileTipMaterial(TaggedObject):
     def k2(self) -> float:
         return self.k1 * self.alpha21
 
-    def __get_strains(self):
+    def __get_displacements(self):
         return np.array([0.0, self.Sbu, 0.1])
 
-    def __get_stresses(self):
+    def __get_forces(self):
         return np.array(
             [0.0, self.Sbu * self.k1, self.Sbu * self.k1 + (0.1 - self.Sbu) * self.k2]
         )
 
-    def __post_init__(self):
-        strains = self.__get_strains()
-        stresses = self.__get_stresses()
+    def model_post_init(self, __context: Any) -> None:
+        displacements = self.__get_displacements()
+        forces = self.__get_forces()
         ops.uniaxialMaterial(
-            self.tag, self.ops_material_type, "-strain", *strains, "-stress", *stresses
+            self.ops_material_type,
+            self.tag,
+            "-strain",
+            *displacements,
+            "-stress",
+            *forces,
         )
 
 
-@dataclass
 class PileStructureMaterial(TaggedObject):
     elasticity_module: float
 
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         ops.uniaxialMaterial(
-            self.tag, OpsMaterials.Elastic.value, self.elasticity_module
+            OpsMaterials.Elastic.value, self.tag, self.elasticity_module
         )

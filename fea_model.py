@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from openseespy import opensees as ops
+from pydantic import BaseModel
 
 from enums import OpsElements
 from materials import (
@@ -15,23 +16,21 @@ from materials import (
 from tag_generator import TaggedObject
 
 
-@dataclass
 class Node(TaggedObject):
     depth: float
 
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         """Generate the object on the ops side"""
         ops.node(self.tag, self.depth)
 
 
-@dataclass
 class SoilElement(TaggedObject):
     fixed_node: Node
     pile_joined_node: Node
     material: PileFrictionMaterial | PileTipMaterial
     ops_element_type: OpsElements = OpsElements.ZeroLength.value
 
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         """
         First build nodes one that is fixed, another that be attached to pile structure
         Then build the material at the specified depth
@@ -40,8 +39,8 @@ class SoilElement(TaggedObject):
         :rtype:
         """
         ops.element(
-            self.tag,
             self.ops_element_type,
+            self.tag,
             self.fixed_node.tag,
             self.pile_joined_node.tag,
             "-mat",
@@ -51,19 +50,21 @@ class SoilElement(TaggedObject):
         )
 
 
-@dataclass
 class PileElement(TaggedObject):
     first_node: Node
     second_node: Node
     pile_radius: float
     material: PileStructureMaterial
+    area: float = None
     ops_element_type: OpsElements = OpsElements.Truss.value
 
     @property
     def __area(self):
+        if self.area:
+            return self.area
         return np.pi * (self.pile_radius**2)
 
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         """
         first create nodes
         then create the material
@@ -77,36 +78,46 @@ class PileElement(TaggedObject):
             self.first_node.tag,
             self.second_node.tag,
             self.__area,
-            self.material,
+            self.material.tag,
         )
 
 
-@dataclass
-class CalibrationParams:
+class CalibrationParams(BaseModel):
     Rfb: float
     Sbu: float
     alpha21: float
     Rfs: float
+    bounds: list[tuple[float]] = [(0.8, 1.0), (1e-3, 9e-3), ((0.0, 1.0), (0.8, 1.0))]
+
+    @staticmethod
+    def from_array(args):
+        return CalibrationParams(Rfb=args[0], Sbu=args[1], alpha21=args[2], Rfs=args[3])
 
 
-@dataclass
-class Pile:
+class Pile(BaseModel):
     pile_length: float
     pile_radius: float
     soil_profile: SoilProfile
     elasticity_modulus: float
     calibration_params: CalibrationParams
     load: float
-    pile_structure_material: PileStructureMaterial = field(init=False)
+    area: float | None = None
+    pile_structure_material: PileStructureMaterial = None
     number_of_node: int = 100
+    number_of_steps: int = 300
+    pile_nodes: list[Node] = []
+    fixed_nodes: list[Node] = []
+    materials: list[PileFrictionMaterial | PileTipMaterial] = []
+    soil_elements: list[SoilElement] = []
 
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
+        self.__initialization()
         self.pile_structure_material = PileStructureMaterial(
             elasticity_module=self.elasticity_modulus
         )
-        self.__initialization()
         self.__mesh()
         self.__generate_elements()
+        self.__apply_load_at_pile_head()
 
     @staticmethod
     def __initialization():
@@ -119,8 +130,8 @@ class Pile:
 
     def __mesh(self):
         depths = np.linspace(0, self.pile_length, self.number_of_node)
-        self.pile_nodes = [Node(depth) for depth in depths]
-        self.fixed_nodes = [Node(depth) for depth in depths]
+        self.pile_nodes = [Node(depth=depth) for depth in depths]
+        self.fixed_nodes = [Node(depth=depth) for depth in depths]
         # fix them
         for node in self.fixed_nodes:
             ops.fix(node.tag, 1)
@@ -131,20 +142,16 @@ class Pile:
     def __generate_elements(self):
         self.__generate_pile_structura_elements()
         self.__generate_soil_elements()
-        self.__apply_load_at_pile_head()
-        self.__analyze()
 
     def __generate_pile_structura_elements(self):
         """First create pile structure elements then assign soil springs to each node of pile structure"""
-        self.pile_elements = list()
         for first_node, second_node in zip(self.pile_nodes, self.pile_nodes[1:]):
-            self.pile_elements.append(
-                PileElement(
-                    first_node=first_node,
-                    second_node=second_node,
-                    pile_radius=self.pile_radius,
-                    material=self.pile_structure_material,
-                )
+            PileElement(
+                first_node=first_node,
+                second_node=second_node,
+                pile_radius=self.pile_radius,
+                material=self.pile_structure_material,
+                area=self.area,
             )
 
     @property
@@ -154,8 +161,6 @@ class Pile:
     def __generate_soil_elements(self):
         """First generate spring materials
         then generate elements"""
-        self.materials = list()
-        self.soil_elements = list()
         for pile_node, fixed_node in zip(self.pile_nodes, self.fixed_nodes):
             if self.__is_tip_node(pile_node):
                 soil_material = PileTipMaterial(
@@ -183,18 +188,24 @@ class Pile:
             )
 
     def __apply_load_at_pile_head(self):
+        ops.timeSeries("Linear", 1)
+        ops.pattern("Plain", 1, 1)
         ops.load(self.__pile_head_node.tag, self.load)
 
-    @staticmethod
-    def __analyze():
+    def analyze(self):
         ops.system("BandSPD")
         ops.numberer("RCM")
         ops.constraints("Plain")
-        ops.integrator("LoadControl", 1.0)
-        ops.algorithm("Linear")
+        ops.integrator("LoadControl", 1.0 / self.number_of_steps)
+        ops.algorithm("Newton")
         ops.analysis("Static")
-        ops.analyze(1)
-
-    def __monitor(self):
-        """Track displacement at pile head and force at pile head"""
-        self.pile_head_displacement = ops.nodeDisp(self.__pile_head_node.tag, 1)
+        head_displacement = []
+        head_force = list()
+        for step in range(self.number_of_steps):
+            ops.analyze(1)
+            head_force.append(ops.getLoadFactor(1) * self.load)
+            head_displacement.append(ops.nodeDisp(self.__pile_head_node.tag, 1))
+        return [
+            head_displacement,
+            head_force,
+        ]
