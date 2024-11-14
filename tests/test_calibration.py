@@ -1,8 +1,7 @@
-import time
-
 import numpy as np
 from matplotlib import pyplot as plt
 
+from calibrator import Calibrator
 from fea_model import Pile, CalibrationParams
 from materials import SoilProfile, SoilLayer
 
@@ -29,29 +28,34 @@ def test_onill_1982():
             ),
         ]
     )
-    pile = Pile(
-        pile_length=13.1,
-        pile_radius=137e-3,
-        area=np.pi * (137e-3) ** 2 - np.pi * (137e-3 - 9.3e-3) ** 2,
-        soil_profile=soil_profile,
-        elasticity_modulus=210e9,
-        calibration_params=CalibrationParams(
-            Rfb=1,
-            Sbu=5e-3,
-            alpha21=0.01,
-            Rfs=1,
-        ),
-        load=653e3,
+
+    def get_pile(calibration_params: CalibrationParams) -> Pile:
+        return Pile(
+            pile_length=13.1,
+            pile_radius=137e-3,
+            area=np.pi * (137e-3) ** 2 - np.pi * (137e-3 - 9.3e-3) ** 2,
+            soil_profile=soil_profile,
+            elasticity_modulus=210e9,
+            calibration_params=calibration_params,
+            load=653e3,
+        )
+
+    calibrator = Calibrator(
+        get_pile=get_pile, load_test_results=onill1982_single_pile_force_deformation
     )
+    final_calibration_params = calibrator.calibrate()
+    pile = get_pile(final_calibration_params)
+    calibrated_result = pile.analyze()
+    pile = get_pile(CalibrationParams.from_default())
     result = pile.analyze()
+    print(f"calibrated params: {final_calibration_params}")
     plt.figure()
-    plt.plot(result[0], result[1], label="fea")
+    plt.plot(calibrated_result[0], calibrated_result[1], label="calibrated FEA")
+    plt.plot(result[0], result[1], label="FEA")
     plt.plot(
         onill1982_single_pile_force_deformation[0],
         onill1982_single_pile_force_deformation[1],
         label="o'nill 1982",
     )
     plt.legend()
-    plt.show(block=False)
-    time.sleep(1)
-    plt.close()
+    plt.show()

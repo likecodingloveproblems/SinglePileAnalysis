@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from openseespy import opensees as ops
@@ -87,11 +87,20 @@ class CalibrationParams(BaseModel):
     Sbu: float
     alpha21: float
     Rfs: float
-    bounds: list[tuple[float]] = [(0.8, 1.0), (1e-3, 9e-3), ((0.0, 1.0), (0.8, 1.0))]
+    bounds: ClassVar[list[tuple[float]]] = [
+        (0.8, 1.0),
+        (1e-3, 9e-3),
+        (0.0, 1.0),
+        (0.8, 1.0),
+    ]
 
     @staticmethod
     def from_array(args):
         return CalibrationParams(Rfb=args[0], Sbu=args[1], alpha21=args[2], Rfs=args[3])
+
+    @staticmethod
+    def from_default():
+        return CalibrationParams(Rfb=1.0, Sbu=5e-3, alpha21=0.01, Rfs=1.0)
 
 
 class Pile(BaseModel):
@@ -103,7 +112,7 @@ class Pile(BaseModel):
     load: float
     area: float | None = None
     pile_structure_material: PileStructureMaterial = None
-    number_of_node: int = 100
+    number_of_node: int = 50
     number_of_steps: int = 300
     pile_nodes: list[Node] = []
     fixed_nodes: list[Node] = []
@@ -117,7 +126,7 @@ class Pile(BaseModel):
         )
         self.__mesh()
         self.__generate_elements()
-        self.__apply_load_at_pile_head()
+        self.apply_load_at_pile_head()
 
     @staticmethod
     def __initialization():
@@ -187,7 +196,7 @@ class Pile(BaseModel):
                 )
             )
 
-    def __apply_load_at_pile_head(self):
+    def apply_load_at_pile_head(self):
         ops.timeSeries("Linear", 1)
         ops.pattern("Plain", 1, 1)
         ops.load(self.__pile_head_node.tag, self.load)

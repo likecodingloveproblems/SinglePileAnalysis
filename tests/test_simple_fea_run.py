@@ -2,7 +2,6 @@ import numpy as np
 
 from fea_model import Pile, CalibrationParams
 from materials import SoilProfile, SoilLayer
-from matplotlib import pyplot as plt
 
 
 def test_simple_onill_fea_run():
