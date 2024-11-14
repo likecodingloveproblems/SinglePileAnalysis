@@ -1,0 +1,6 @@
+openseespy==3.7.0.4
+pytest==8.3.2
+pydantic==2.9.2
+numpy==1.26.4
+scipy==1.13.1
+matplotlib==3.9.0
